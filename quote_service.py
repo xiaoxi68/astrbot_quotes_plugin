@@ -665,24 +665,42 @@ class QuoteService:
     def _forward_delete_fingerprints(self, nodes: list[Any]) -> tuple[list[str], Any | None]:
         # 长文本/图文语录会被 AstrBot 自动包成合并转发（AstrNa 可能再拆成多节点），
         # 删除定位需按发送时的指纹方案重建候选，而不是只算 forward 指纹。
+        # 注意：相邻文本段必须按原始文本先拼接再统一规整——逐段 strip 会在
+        # AstrNa 的切分边界丢字符（实测 node1/node2 首字符是空格），导致指纹不匹配。
         parts: list[dict[str, Any]] = []
         images: list[Any] = []
+        raw_texts: list[str] = []
+        text_buf: list[str] = []
+
+        def flush_text() -> None:
+            if not text_buf:
+                return
+            merged = self._canonical_text("".join(text_buf))
+            if merged:
+                parts.append({"type": "text", "text": merged})
+            text_buf.clear()
+
         for node in nodes:
             for segment in getattr(node, "segments", []) or []:
+                if segment.type == "text":
+                    raw_texts.append(str(segment.text or ""))
+                    text_buf.append(str(segment.text or ""))
+                    continue
+                flush_text()
                 payload = self._pending_forward_segment_payload(segment)
                 if payload is not None:
                     parts.append(payload)
                 if segment.type == "image" and getattr(segment, "image", None) is not None:
                     images.append(segment.image)
+        flush_text()
 
         candidates: list[str] = []
         if parts:
             # 图文链语录发送时的 chain 指纹
             candidates.append(self._hash_payload({"kind": "chain", "parts": parts}))
         if parts and all(part.get("type") == "text" for part in parts):
-            # 纯文本兜底语录发送时指纹（AstrNa 拆分后需重新拼接归一）
-            merged = "".join(str(part.get("text") or "") for part in parts)
-            plain = self._fingerprint_plain_text(merged)
+            # 纯文本兜底语录发送时指纹（按原始文本拼接，保持与发送内容逐字节一致）
+            plain = self._fingerprint_plain_text("".join(raw_texts))
             if plain:
                 candidates.append(plain)
         for image in images:
