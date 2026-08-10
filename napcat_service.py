@@ -11,8 +11,10 @@ except Exception:  # pragma: no cover
 
 try:
     from .models import Quote
+    from .utils import parse_cq_message
 except ImportError:  # pragma: no cover
     from models import Quote
+    from utils import parse_cq_message
 
 
 class NapcatService:
@@ -67,6 +69,9 @@ class NapcatService:
         return []
 
     def extract_forward_reference(self, message_obj: Any) -> tuple[str | None, dict[str, Any] | None]:
+        if isinstance(message_obj, str):
+            # get_msg 在 message_format=string 的实现上返回 CQ 码字符串
+            message_obj = parse_cq_message(message_obj)
         return (
             self._extract_forward_id_from_message_obj(message_obj),
             self._extract_forward_payload_from_message_obj(message_obj),

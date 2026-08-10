@@ -323,20 +323,21 @@ class QuoteService:
             )
             return None
 
-        fingerprint, image = await self._fingerprint_from_reply_payload(event, reply_payload)
-        if not fingerprint:
+        fingerprints, image = await self._fingerprint_from_reply_payload(event, reply_payload)
+        if not fingerprints:
             logger.info(f"删除语录定位失败: 无法从被回复消息计算指纹, message_id={reply_message_id}")
             return None
 
         replied_at = float(reply_payload.get("time") or 0)
-        quote_id = self.repository.find_sent_quote_id(
-            session_key,
-            fingerprint=fingerprint,
-            replied_at=replied_at,
-        )
-        if quote_id:
-            logger.info(f"删除语录定位成功: 精确指纹匹配 quote_id={quote_id}, session={session_key}")
-            return quote_id
+        for fingerprint in fingerprints:
+            quote_id = self.repository.find_sent_quote_id(
+                session_key,
+                fingerprint=fingerprint,
+                replied_at=replied_at,
+            )
+            if quote_id:
+                logger.info(f"删除语录定位成功: 精确指纹匹配 quote_id={quote_id}, session={session_key}")
+                return quote_id
         if image is not None:
             legacy_quote_id = self.repository.find_sent_quote_id(
                 session_key,
@@ -628,7 +629,7 @@ class QuoteService:
         self,
         event: Any,
         reply_payload: dict[str, Any],
-    ) -> tuple[str, Any | None]:
+    ) -> tuple[list[str], Any | None]:
         message = reply_payload.get("message")
         forward_id, forward_payload = self.napcat_service.extract_forward_reference(message)
         if forward_id or forward_payload:
@@ -639,17 +640,17 @@ class QuoteService:
                 forward_loader=self.napcat_service.fetch_forward_messages,
             )
             if nodes:
-                return self._fingerprint_pending_forward_nodes(nodes), None
+                return self._forward_delete_fingerprints(nodes)
 
         segments = await self.image_service.build_reply_segments(event, message)
         normalized = self._normalize_pending_segments(segments)
         if not normalized:
-            return "", None
+            return [], None
 
         if len(normalized) == 1 and normalized[0].type == "image" and normalized[0].image is not None:
-            return self._fingerprint_image_sha(normalized[0].image.sha256), normalized[0].image
+            return [self._fingerprint_image_sha(normalized[0].image.sha256)], normalized[0].image
 
-        return (
+        return [
             self._hash_payload(
                 {
                     "kind": "chain",
@@ -658,9 +659,60 @@ class QuoteService:
                         for segment in normalized
                     ],
                 }
-            ),
-            None,
-        )
+            )
+        ], None
+
+    def _forward_delete_fingerprints(self, nodes: list[Any]) -> tuple[list[str], Any | None]:
+        # 长文本/图文语录会被 AstrBot 自动包成合并转发（AstrNa 可能再拆成多节点），
+        # 删除定位需按发送时的指纹方案重建候选，而不是只算 forward 指纹。
+        # 注意：相邻文本段必须按原始文本先拼接再统一规整——逐段 strip 会在
+        # AstrNa 的切分边界丢字符（实测 node1/node2 首字符是空格），导致指纹不匹配。
+        parts: list[dict[str, Any]] = []
+        images: list[Any] = []
+        raw_texts: list[str] = []
+        text_buf: list[str] = []
+
+        def flush_text() -> None:
+            if not text_buf:
+                return
+            merged = self._canonical_text("".join(text_buf))
+            if merged:
+                parts.append({"type": "text", "text": merged})
+            text_buf.clear()
+
+        for node in nodes:
+            for segment in getattr(node, "segments", []) or []:
+                if segment.type == "text":
+                    raw_texts.append(str(segment.text or ""))
+                    text_buf.append(str(segment.text or ""))
+                    continue
+                flush_text()
+                payload = self._pending_forward_segment_payload(segment)
+                if payload is not None:
+                    parts.append(payload)
+                if segment.type == "image" and getattr(segment, "image", None) is not None:
+                    images.append(segment.image)
+        flush_text()
+
+        candidates: list[str] = []
+        if parts:
+            # 图文链语录发送时的 chain 指纹
+            candidates.append(self._hash_payload({"kind": "chain", "parts": parts}))
+        if parts and all(part.get("type") == "text" for part in parts):
+            # 纯文本兜底语录发送时指纹（按原始文本拼接，保持与发送内容逐字节一致）
+            plain = self._fingerprint_plain_text("".join(raw_texts))
+            if plain:
+                candidates.append(plain)
+        for image in images:
+            # 单图语录发送时的 image 指纹
+            candidates.append(self._fingerprint_image_sha(image.sha256))
+        forward_fingerprint = self._fingerprint_pending_forward_nodes(nodes)
+        if forward_fingerprint:
+            # kind == "forward" 的聊天记录语录保持原方案
+            candidates.append(forward_fingerprint)
+
+        unique = list(dict.fromkeys(item for item in candidates if item))
+        return unique, (images[0] if images else None)
 
     def _fingerprint_plain_text(self, text: str) -> str:
         normalized = self._canonical_text(normalize_quote_text(text))

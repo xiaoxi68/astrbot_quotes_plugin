@@ -123,12 +123,12 @@ class QuoteRenderer:
             <meta charset='utf-8' />
             <style>
                 * {{ box-sizing: border-box; }}
-                html, body {{ margin:0; padding:0; width:{width}px; height:{height}px; background:{bg_color}; }}
-                .root {{ position:relative; width:{width}px; height:{height}px; background:{bg_color}; font-family:{font_family}; overflow:hidden; }}
-                .left {{ position:absolute; left:0; top:0; width:{int(width * 0.36)}px; height:{height}px; overflow:hidden; z-index:0; }}
+                html, body {{ margin:0; padding:0; width:{width}px; min-height:{height}px; height:auto; background:{bg_color}; }}
+                .root {{ position:relative; width:{width}px; min-height:{height}px; height:auto; background:{bg_color}; font-family:{font_family}; overflow:hidden; }}
+                .left {{ position:absolute; left:0; top:0; bottom:0; width:{int(width * 0.36)}px; overflow:hidden; z-index:0; }}
                 .left img {{ width:100%; height:100%; object-fit:cover; display:block; }}
                 .left .left-shade {{ position:absolute; inset:0; background: linear-gradient(to right, rgba(0,0,0,0) 0%, rgba(0,0,0,0.28) 58%, rgba(0,0,0,0.55) 100%); }}
-                .right {{ position:absolute; left:{int(width * 0.36)}px; top:0; width:{int(width * 0.64)}px; height:{height}px; background:{bg_color}; display:flex; align-items:center; justify-content:center; text-align:center; z-index:2; }}
+                .right {{ position:relative; margin-left:{int(width * 0.36)}px; width:{int(width * 0.64)}px; min-height:{height}px; padding:36px 0; background:{bg_color}; display:flex; align-items:center; justify-content:center; text-align:center; z-index:2; }}
                 .text {{
                     color:{text_color};
                     font-size:{font_size}px;
@@ -187,8 +187,9 @@ class QuoteRenderer:
             template,
             {},
             {
-                "full_page": False,
+                "full_page": True,
                 "omit_background": False,
-                "clip": {"x": 0, "y": 0, "width": width, "height": height},
+                "viewport_width": width,
+                "viewport_height": height,
             },
         )

@@ -21,7 +21,7 @@ try:
         PreparedImage,
         PreparedMedia,
     )
-    from .utils import prepare_image, prepare_media
+    from .utils import parse_cq_message, prepare_image, prepare_media
 except ImportError:  # pragma: no cover
     from models import (
         ImageCollection,
@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover
         PreparedImage,
         PreparedMedia,
     )
-    from utils import prepare_image, prepare_media
+    from utils import parse_cq_message, prepare_image, prepare_media
 
 
 ForwardMessageLoader = Callable[[Any, str | None, dict[str, Any] | None], Awaitable[list[dict[str, Any]]]]
@@ -64,6 +64,11 @@ class ImageService:
         return ImageCollection(reply_images=reply_images, current_images=current_images)
 
     async def build_reply_segments(self, event: Any, message: Any) -> list[PendingQuoteSegment]:
+        if isinstance(message, str):
+            # get_msg 在 message_format=string 的实现上返回 CQ 码字符串
+            message = parse_cq_message(message)
+        elif isinstance(message, dict):
+            message = [message]
         if not isinstance(message, list):
             return []
         segments: list[PendingQuoteSegment] = []
@@ -94,6 +99,14 @@ class ImageService:
     ) -> list[PendingQuoteSegment]:
         segments: list[PendingQuoteSegment] = []
         first_plain_consumed = False
+        # AstrBot 唤醒阶段已剥离真实生效前缀，message_str 此时以指令开头
+        event_message_str = ""
+        get_message_str = getattr(event, "get_message_str", None)
+        if callable(get_message_str):
+            try:
+                event_message_str = str(get_message_str() or "")
+            except Exception:
+                event_message_str = ""
         try:
             message_segments = list(event.get_messages())
         except Exception as exc:
@@ -109,7 +122,9 @@ class ImageService:
                 if Comp is not None and isinstance(raw_segment, Comp.Plain):
                     text = str(getattr(raw_segment, "text", "") or "")
                     if not first_plain_consumed:
-                        text = self._strip_command_invocation(text, command_name)
+                        text = self._strip_command_invocation(
+                            text, command_name, event_message_str
+                        )
                         if explicit_qq and text.startswith(explicit_qq):
                             text = text[len(explicit_qq) :].strip()
                         first_plain_consumed = True
@@ -211,7 +226,11 @@ class ImageService:
         max_depth: int,
     ) -> list[PendingForwardSegment]:
         if isinstance(content_chain, str):
-            return [PendingForwardSegment(type="text", text=content_chain)] if content_chain else []
+            if "[CQ:" in content_chain:
+                # 节点内容为 CQ 码字符串时先解析（message_format=string 的实现）
+                content_chain = parse_cq_message(content_chain)
+            else:
+                return [PendingForwardSegment(type="text", text=content_chain)] if content_chain else []
         if isinstance(content_chain, dict):
             content_chain = [content_chain]
         elif not isinstance(content_chain, list):
@@ -528,10 +547,18 @@ class ImageService:
             logger.info(f"get_image 回退失败: {exc}")
             return None
 
-    def _strip_command_invocation(self, text: str, command_name: str) -> str:
+    def _strip_command_invocation(
+        self, text: str, command_name: str, event_message_str: str = ""
+    ) -> str:
         text = text.strip()
         if not text or not command_name:
             return text
+
+        # 优先用 AstrBot 已剥离前缀的 message_str 定位指令，兼容任意唤醒形式
+        if event_message_str.strip().startswith(command_name):
+            idx = text.find(command_name)
+            if idx >= 0:
+                return text[idx + len(command_name) :].strip()
 
         if text.startswith(command_name):
             return text[len(command_name) :].strip()

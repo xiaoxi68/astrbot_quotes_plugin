@@ -299,3 +299,66 @@ def rel_image_path(session_key: str, file_name: str) -> str:
 
 def rel_media_path(session_key: str, file_name: str) -> str:
     return f"{GROUPS_DIRNAME}/{session_key}/{MEDIA_DIRNAME}/{file_name}"
+
+
+_CQ_SEGMENT_PATTERN = re.compile(r"\[CQ:([A-Za-z0-9_-]+)((?:,[^\[\]]*)?)\]")
+
+
+def _cq_unescape(value: str) -> str:
+    return (
+        str(value)
+        .replace("&#91;", "[")
+        .replace("&#93;", "]")
+        .replace("&#44;", ",")
+        .replace("&amp;", "&")
+    )
+
+
+def _parse_cq_via_aiocqhttp(raw: str) -> list[dict[str, Any]] | None:
+    # 借助框架自带的 aiocqhttp.message.Message 解析 CQ 码；不可用或解析为空时返回 None
+    try:
+        from aiocqhttp.message import Message
+
+        segments = [
+            {"type": str(segment.type).lower(), "data": dict(segment.data or {})}
+            for segment in Message(raw)
+            if getattr(segment, "type", None)
+        ]
+        return segments or None
+    except Exception:
+        return None
+
+
+def parse_cq_message(raw: str) -> list[dict[str, Any]]:
+    # 把 CQ 码字符串消息解析为 OneBot 段列表，兼容 message_format=string 的实现（如 go-cqhttp 默认）
+    raw = str(raw or "")
+    if not raw:
+        return []
+    if "[CQ:" not in raw:
+        return [{"type": "text", "data": {"text": _cq_unescape(raw)}}]
+
+    # 优先复用框架依赖 aiocqhttp 的解析，失败再回落到内置简化解析
+    framework_segments = _parse_cq_via_aiocqhttp(raw)
+    if framework_segments is not None:
+        return framework_segments
+
+    segments: list[dict[str, Any]] = []
+    pos = 0
+    for match in _CQ_SEGMENT_PATTERN.finditer(raw):
+        if match.start() > pos:
+            text = _cq_unescape(raw[pos : match.start()])
+            if text:
+                segments.append({"type": "text", "data": {"text": text}})
+        data: dict[str, Any] = {}
+        params = (match.group(2) or "").lstrip(",")
+        for item in params.split(",") if params else []:
+            key, sep, value = item.partition("=")
+            if sep:
+                data[key] = _cq_unescape(value)
+        segments.append({"type": match.group(1).lower(), "data": data})
+        pos = match.end()
+    if pos < len(raw):
+        text = _cq_unescape(raw[pos:])
+        if text:
+            segments.append({"type": "text", "data": {"text": text}})
+    return segments
