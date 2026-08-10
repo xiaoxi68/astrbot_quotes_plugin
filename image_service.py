@@ -94,6 +94,14 @@ class ImageService:
     ) -> list[PendingQuoteSegment]:
         segments: list[PendingQuoteSegment] = []
         first_plain_consumed = False
+        # AstrBot 唤醒阶段已剥离真实生效前缀，message_str 此时以指令开头
+        event_message_str = ""
+        get_message_str = getattr(event, "get_message_str", None)
+        if callable(get_message_str):
+            try:
+                event_message_str = str(get_message_str() or "")
+            except Exception:
+                event_message_str = ""
         try:
             message_segments = list(event.get_messages())
         except Exception as exc:
@@ -109,7 +117,9 @@ class ImageService:
                 if Comp is not None and isinstance(raw_segment, Comp.Plain):
                     text = str(getattr(raw_segment, "text", "") or "")
                     if not first_plain_consumed:
-                        text = self._strip_command_invocation(text, command_name)
+                        text = self._strip_command_invocation(
+                            text, command_name, event_message_str
+                        )
                         if explicit_qq and text.startswith(explicit_qq):
                             text = text[len(explicit_qq) :].strip()
                         first_plain_consumed = True
@@ -528,10 +538,18 @@ class ImageService:
             logger.info(f"get_image 回退失败: {exc}")
             return None
 
-    def _strip_command_invocation(self, text: str, command_name: str) -> str:
+    def _strip_command_invocation(
+        self, text: str, command_name: str, event_message_str: str = ""
+    ) -> str:
         text = text.strip()
         if not text or not command_name:
             return text
+
+        # 优先用 AstrBot 已剥离前缀的 message_str 定位指令，兼容任意唤醒形式
+        if event_message_str.strip().startswith(command_name):
+            idx = text.find(command_name)
+            if idx >= 0:
+                return text[idx + len(command_name) :].strip()
 
         if text.startswith(command_name):
             return text[len(command_name) :].strip()
