@@ -21,7 +21,7 @@ try:
         PreparedImage,
         PreparedMedia,
     )
-    from .utils import prepare_image, prepare_media
+    from .utils import parse_cq_message, prepare_image, prepare_media
 except ImportError:  # pragma: no cover
     from models import (
         ImageCollection,
@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover
         PreparedImage,
         PreparedMedia,
     )
-    from utils import prepare_image, prepare_media
+    from utils import parse_cq_message, prepare_image, prepare_media
 
 
 ForwardMessageLoader = Callable[[Any, str | None, dict[str, Any] | None], Awaitable[list[dict[str, Any]]]]
@@ -64,6 +64,11 @@ class ImageService:
         return ImageCollection(reply_images=reply_images, current_images=current_images)
 
     async def build_reply_segments(self, event: Any, message: Any) -> list[PendingQuoteSegment]:
+        if isinstance(message, str):
+            # get_msg 在 message_format=string 的实现上返回 CQ 码字符串
+            message = parse_cq_message(message)
+        elif isinstance(message, dict):
+            message = [message]
         if not isinstance(message, list):
             return []
         segments: list[PendingQuoteSegment] = []
@@ -221,7 +226,11 @@ class ImageService:
         max_depth: int,
     ) -> list[PendingForwardSegment]:
         if isinstance(content_chain, str):
-            return [PendingForwardSegment(type="text", text=content_chain)] if content_chain else []
+            if "[CQ:" in content_chain:
+                # 节点内容为 CQ 码字符串时先解析（message_format=string 的实现）
+                content_chain = parse_cq_message(content_chain)
+            else:
+                return [PendingForwardSegment(type="text", text=content_chain)] if content_chain else []
         if isinstance(content_chain, dict):
             content_chain = [content_chain]
         elif not isinstance(content_chain, list):
